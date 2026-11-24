@@ -2,25 +2,66 @@ import { useEffect, useMemo, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
+  addToCompare,
+  advanceOrderStatus,
+  appendNotification,
+  BRANDS,
+  buildRestockNotification,
   calculateTotals,
+  cancelOrder,
+  CANCELABLE_STATUS,
   CATEGORIES,
   COUPON_CODE,
+  createDemoOrders,
+  createQuestion,
+  createStockAlert,
+  createSupportTicket,
   createConfirmedOrder,
+  estimateShipping,
   filterAndSortProducts,
   formatPrice,
+  getCartLineQuantity,
+  getLineInfo,
+  getProductStock,
   getRatingStats,
+  getRecommendations,
+  getVariant,
   INITIAL_PRODUCTS,
   isValidCoupon,
+  makeCartKey,
+  makeNotification,
+  NEXT_STATUS,
   normalizePersistedData,
-  SHIPPING_FEE,
+  ORDER_STATUS,
+  parseCartKey,
+  removeFromCompare,
+  restockLine,
+  saveAddress as saveAddressRule,
+  setCartLine,
+  setPrincipalAddress,
+  SHIPPING_MODALITIES,
+  simulateQuestionAnswer,
+  simulateTicketReply,
+  SUPPORT_MOTIVES,
+  syncProductStock,
+  validateAddress,
   validateBuyer,
   validateCart,
+  validateCartLine,
+  validatePriceRange,
   validateProduct,
+  validateQuestion,
   validateRating,
+  validateSupportRequest,
 } from './marketplace.mjs';
 
-const STORAGE_KEY = 'jhoy-marketplace-v1';
+const STORAGE_KEY = 'jhoy-marketplace-v2';
+const FRESH_STATE = normalizePersistedData(null);
 const EMPTY_BUYER = { name: '', phone: '', municipality: '', address: '' };
+const EMPTY_FILTERS = { brand: 'Todas', minPrice: '', maxPrice: '', onlyAvailable: false };
+const EMPTY_ADDRESS_FORM = { alias: '', municipality: '', reference: '', principal: false };
+const EMPTY_HELP_FORM = { orderCode: '', motive: SUPPORT_MOTIVES[0], description: '' };
+
 const COLORS = {
   ink: '#172438',
   muted: '#78869A',
@@ -31,7 +72,20 @@ const COLORS = {
   line: '#E8ECF2',
   green: '#17865B',
   red: '#B23B4B',
+  amber: '#B37A12',
 };
+
+const STATUS_COLORS = {
+  [ORDER_STATUS.CONFIRMADO]: COLORS.blue,
+  [ORDER_STATUS.PREPARANDO]: COLORS.amber,
+  [ORDER_STATUS.EN_CAMINO]: '#7B5BD6',
+  [ORDER_STATUS.ENTREGADO]: COLORS.green,
+  [ORDER_STATUS.CANCELADO]: COLORS.red,
+};
+
+// ---------------------------------------------------------------------------
+// Componentes reutilizables
+// ---------------------------------------------------------------------------
 
 function ProductArtwork({ product, large = false }) {
   return (
@@ -58,15 +112,19 @@ function BrandMark() {
   );
 }
 
-function ActionButton({ label, onPress, disabled = false, secondary = false, compact = false }) {
+function ActionButton({ label, onPress, disabled = false, secondary = false, compact = false, tone }) {
+  const style = [styles.actionButton, secondary && styles.secondaryButton, compact && styles.compactButton, disabled && styles.disabledButton];
+  if (tone === 'danger') style.push(styles.dangerButton);
   return (
     <Pressable
       accessibilityRole="button"
       disabled={disabled}
       onPress={onPress}
-      style={[styles.actionButton, secondary && styles.secondaryButton, compact && styles.compactButton, disabled && styles.disabledButton]}
+      style={style}
     >
-      <Text style={[styles.actionButtonText, secondary && styles.secondaryButtonText, disabled && styles.disabledButtonText]}>{label}</Text>
+      <Text style={[styles.actionButtonText, secondary && styles.secondaryButtonText, disabled && styles.disabledButtonText]}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -78,52 +136,6 @@ function EmptyState({ title, message, action, onPress }) {
       <Text style={styles.emptyStateTitle}>{title}</Text>
       <Text style={styles.emptyStateCopy}>{message}</Text>
       {action && <ActionButton label={action} onPress={onPress} compact />}
-    </View>
-  );
-}
-
-function ProductCard({ product, isFavorite, cartQuantity, onOpen, onAdd, onToggleFavorite }) {
-  const unavailable = product.stock === 0;
-  const atCartLimit = cartQuantity >= product.stock;
-  return (
-    <View style={styles.productCard}>
-      <View style={styles.productArtworkWrap}>
-        <Pressable onPress={onOpen} accessibilityRole="button" accessibilityLabel={`Ver ${product.name}`}>
-          <ProductArtwork product={product} />
-        </Pressable>
-        <Pressable
-          onPress={onToggleFavorite}
-          style={styles.favoriteButton}
-          accessibilityRole="button"
-          accessibilityLabel={isFavorite ? `Quitar ${product.name} de favoritos` : `Agregar ${product.name} a favoritos`}
-        >
-          <Text style={[styles.favoriteGlyph, isFavorite && styles.favoriteGlyphActive]}>{isFavorite ? '♥' : '♡'}</Text>
-        </Pressable>
-      </View>
-      <Text style={styles.productCategory}>{product.category}</Text>
-      <Pressable onPress={onOpen}><Text style={styles.productName} numberOfLines={2}>{product.name}</Text></Pressable>
-      <Text style={styles.productPrice}>{formatPrice(product.price)}</Text>
-      <Text style={[styles.stockLabel, unavailable && styles.outOfStock]}>{unavailable ? 'Agotado' : `${product.stock} disponibles`}</Text>
-      <ActionButton
-        label={unavailable ? 'Agotado' : atCartLimit ? 'Stock en carrito' : '＋  Agregar'}
-        onPress={onAdd}
-        disabled={unavailable || atCartLimit}
-        compact
-      />
-    </View>
-  );
-}
-
-function QuantityControl({ quantity, onDecrease, onIncrease, canIncrease }) {
-  return (
-    <View style={styles.quantityControl}>
-      <Pressable onPress={onDecrease} style={styles.quantityButton} accessibilityRole="button" accessibilityLabel="Disminuir cantidad">
-        <Text style={styles.quantityButtonText}>−</Text>
-      </Pressable>
-      <Text style={styles.quantityValue}>{quantity}</Text>
-      <Pressable onPress={onIncrease} disabled={!canIncrease} style={[styles.quantityButton, !canIncrease && styles.quantityButtonDisabled]} accessibilityRole="button" accessibilityLabel="Aumentar cantidad">
-        <Text style={styles.quantityButtonText}>+</Text>
-      </Pressable>
     </View>
   );
 }
@@ -155,7 +167,128 @@ function SectionTitle({ title, subtitle }) {
   );
 }
 
+function Chip({ label, active, onPress, disabled = false }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.chip, active && styles.chipActive, disabled && styles.chipDisabled]}
+    >
+      <Text style={[styles.chipText, active && styles.chipTextActive, disabled && styles.chipTextDisabled]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function InfoRow({ label, value, emphasis = false, negative = false }) {
+  return (
+    <View style={styles.summaryRow}>
+      <Text style={[styles.summaryLabel, emphasis && styles.totalLabel]}>{label}</Text>
+      <Text style={[styles.summaryValue, emphasis && styles.totalValue, negative && styles.discountValue]}>{value}</Text>
+    </View>
+  );
+}
+
+function QuantityControl({ quantity, onDecrease, onIncrease, canIncrease }) {
+  return (
+    <View style={styles.quantityControl}>
+      <Pressable onPress={onDecrease} style={styles.quantityButton} accessibilityRole="button" accessibilityLabel="Disminuir cantidad">
+        <Text style={styles.quantityButtonText}>−</Text>
+      </Pressable>
+      <Text style={styles.quantityValue}>{quantity}</Text>
+      <Pressable onPress={onIncrease} disabled={!canIncrease} style={[styles.quantityButton, !canIncrease && styles.quantityButtonDisabled]} accessibilityRole="button" accessibilityLabel="Aumentar cantidad">
+        <Text style={styles.quantityButtonText}>+</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function StatusBadge({ status }) {
+  return (
+    <View style={[styles.statusBadge, { borderColor: STATUS_COLORS[status] || COLORS.muted }]}>
+      <Text style={[styles.statusText, { color: STATUS_COLORS[status] || COLORS.muted }]}>{status}</Text>
+    </View>
+  );
+}
+
+function PlainBadge({ label, color = COLORS.blue }) {
+  return (
+    <View style={[styles.statusBadge, { borderColor: color }]}>
+      <Text style={[styles.statusText, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+function ConfirmDialog({ visible, title, message, confirmLabel = 'Confirmar', onConfirm, onCancel }) {
+  if (!visible) return null;
+  return (
+    <View style={styles.dialogOverlay}>
+      <View style={styles.dialogCard}>
+        <Text style={styles.dialogTitle}>{title}</Text>
+        <Text style={styles.dialogMessage}>{message}</Text>
+        <View style={styles.dialogActions}>
+          <ActionButton label={confirmLabel} onPress={onConfirm} compact tone="danger" />
+          <ActionButton label="Volver" onPress={onCancel} secondary compact />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function ProductCard({ product, isFavorite, cartQuantity, isCompared, onOpen, onAdd, onToggleFavorite, onToggleCompare }) {
+  const stock = getProductStock(product);
+  const unavailable = stock === 0;
+  const hasVariants = Array.isArray(product.variants) && product.variants.length > 0;
+  const atCartLimit = cartQuantity >= stock;
+  return (
+    <View style={styles.productCard}>
+      <View style={styles.productArtworkWrap}>
+        <Pressable onPress={onOpen} accessibilityRole="button" accessibilityLabel={`Ver ${product.name}`}>
+          <ProductArtwork product={product} />
+        </Pressable>
+        <Pressable
+          onPress={onToggleFavorite}
+          style={styles.favoriteButton}
+          accessibilityRole="button"
+          accessibilityLabel={isFavorite ? `Quitar ${product.name} de favoritos` : `Agregar ${product.name} a favoritos`}
+        >
+          <Text style={[styles.favoriteGlyph, isFavorite && styles.favoriteGlyphActive]}>{isFavorite ? '♥' : '♡'}</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.productCategory}>{product.brand} · {product.category}</Text>
+      <Pressable onPress={onOpen}><Text style={styles.productName} numberOfLines={2}>{product.name}</Text></Pressable>
+      <Text style={styles.productPrice}>
+        {hasVariants ? `Desde ${formatPrice(Math.min(...product.variants.map((v) => v.price)))}` : formatPrice(product.price)}
+      </Text>
+      <Text style={[styles.stockLabel, unavailable && styles.outOfStock]}>
+        {unavailable ? 'Agotado' : `${stock} disponibles${hasVariants ? ' en variantes' : ''}`}
+      </Text>
+      <View style={styles.cardActions}>
+        <ActionButton
+          label={unavailable ? 'Agotado' : atCartLimit ? 'Stock en carrito' : '＋  Agregar'}
+          onPress={onAdd}
+          disabled={unavailable || atCartLimit}
+          compact
+        />
+        <Pressable
+          onPress={onToggleCompare}
+          accessibilityRole="button"
+          accessibilityLabel={isCompared ? `Quitar ${product.name} del comparador` : `Comparar ${product.name}`}
+          style={[styles.compareToggle, isCompared && styles.compareToggleActive]}
+        >
+          <Text style={[styles.compareToggleText, isCompared && styles.compareToggleTextActive]}>{isCompared ? '✓ Comp' : 'Comp'}</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Aplicación
+// ---------------------------------------------------------------------------
+
 export default function App() {
+  // Estado heredado del Taller 4
   const [products, setProducts] = useState(INITIAL_PRODUCTS);
   const [cart, setCart] = useState({});
   const [favorites, setFavorites] = useState([]);
@@ -163,7 +296,7 @@ export default function App() {
   const [screen, setScreen] = useState('catalog');
   const [detailBackScreen, setDetailBackScreen] = useState('catalog');
   const [selectedProductId, setSelectedProductId] = useState(INITIAL_PRODUCTS[0].id);
-  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [selectedOrderCode, setSelectedOrderCode] = useState(null);
   const [confirmedOrder, setConfirmedOrder] = useState(null);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('Todas');
@@ -178,15 +311,69 @@ export default function App() {
   const [editingProductId, setEditingProductId] = useState(null);
   const [ratingSelection, setRatingSelection] = useState(0);
 
+  // Estado nuevo del Taller 5
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [filterError, setFilterError] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [compareIds, setCompareIds] = useState([]);
+  const [selectedVariantId, setSelectedVariantId] = useState(null);
+  const [detailQuantity, setDetailQuantity] = useState(1);
+  const [questions, setQuestions] = useState(FRESH_STATE.questions);
+  const [questionDraft, setQuestionDraft] = useState('');
+  const [addresses, setAddresses] = useState(FRESH_STATE.addresses);
+  const [selectedAddressId, setSelectedAddressId] = useState(FRESH_STATE.selectedAddressId);
+  const [shippingModal, setShippingModal] = useState(FRESH_STATE.shippingModal);
+  const [addressForm, setAddressForm] = useState(EMPTY_ADDRESS_FORM);
+  const [editingAddressId, setEditingAddressId] = useState(null);
+  const [notifications, setNotifications] = useState(FRESH_STATE.notifications);
+  const [stockAlerts, setStockAlerts] = useState(FRESH_STATE.stockAlerts);
+  const [tickets, setTickets] = useState(FRESH_STATE.tickets);
+  const [helpForm, setHelpForm] = useState(EMPTY_HELP_FORM);
+  const [dialog, setDialog] = useState(null);
+
+  // -------------------------------------------------------------------------
+  // Derivados
+  // -------------------------------------------------------------------------
   const cartCount = Object.values(cart).reduce((sum, quantity) => sum + quantity, 0);
-  const cartItems = products.filter((product) => cart[product.id] > 0);
-  const totals = calculateTotals(cart, products, couponApplied);
+  const cartLines = useMemo(() => Object.entries(cart).map(([key, quantity]) => {
+    const { productId, variantId } = parseCartKey(key);
+    const product = products.find((item) => item.id === productId);
+    if (!product) return null;
+    const info = getLineInfo(product, variantId);
+    return { key, product, variantId, variantLabel: info.label, price: info.price, stock: info.stock, quantity, lineTotal: info.price * quantity };
+  }).filter(Boolean), [cart, products]);
+
   const selectedProduct = products.find((product) => product.id === selectedProductId) || products[0];
+  const selectedVariant = getVariant(selectedProduct, selectedVariantId);
+  const selectedVariantInfo = getLineInfo(selectedProduct, selectedVariantId);
+  const selectedAddress = addresses.find((address) => address.id === selectedAddressId) || null;
+  const shippingQuote = useMemo(
+    () => (selectedAddress && shippingModal ? estimateShipping(selectedAddress.municipality, shippingModal) : null),
+    [selectedAddress, shippingModal],
+  );
+  const totals = useMemo(
+    () => calculateTotals(cart, products, couponApplied, shippingQuote),
+    [cart, products, couponApplied, shippingQuote],
+  );
   const filteredProducts = useMemo(
-    () => filterAndSortProducts(products, search, category, sort),
-    [products, search, category, sort],
+    () => filterAndSortProducts(products, search, category, sort, filters),
+    [products, search, category, sort, filters],
+  );
+  const compareProducts = compareIds.map((id) => products.find((product) => product.id === id)).filter(Boolean);
+  const selectedOrder = orders.find((order) => (order.id || order.code) === selectedOrderCode) || null;
+  const unreadCount = notifications.filter((item) => !item.read).length;
+  const productQuestions = questions.filter((question) => question.productId === selectedProduct?.id);
+  const recommendations = useMemo(
+    () => getRecommendations(products, selectedProductId, 4),
+    [products, selectedProductId],
+  );
+  const activeAlert = stockAlerts.find(
+    (alert) => alert.productId === selectedProductId && alert.variantId === selectedVariantId && alert.active,
   );
 
+  // -------------------------------------------------------------------------
+  // Hidratación y persistencia local
+  // -------------------------------------------------------------------------
   useEffect(() => {
     let active = true;
     const restore = async () => {
@@ -207,6 +394,14 @@ export default function App() {
             setCart(restored.cart);
             setFavorites(restored.favorites);
             setOrders(restored.orders);
+            setAddresses(restored.addresses);
+            setSelectedAddressId(restored.selectedAddressId);
+            setShippingModal(restored.shippingModal);
+            setNotifications(restored.notifications);
+            setQuestions(restored.questions);
+            setStockAlerts(restored.stockAlerts);
+            setTickets(restored.tickets);
+            setCompareIds(restored.compareIds);
           }
         }
       } catch (error) {
@@ -222,23 +417,37 @@ export default function App() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const state = JSON.stringify({ products, cart, favorites, orders });
+    const state = JSON.stringify({
+      products, cart, favorites, orders, addresses, selectedAddressId, shippingModal,
+      notifications, questions, stockAlerts, tickets, compareIds,
+    });
     AsyncStorage.setItem(STORAGE_KEY, state).catch((error) => {
       console.error('No fue posible guardar los datos de JHOY.', error);
       setNotice({ message: 'No se pudieron guardar los cambios en este dispositivo.', type: 'error' });
     });
-  }, [products, cart, favorites, orders, hydrated]);
+  }, [hydrated, products, cart, favorites, orders, addresses, selectedAddressId, shippingModal,
+    notifications, questions, stockAlerts, tickets, compareIds]);
 
+  // -------------------------------------------------------------------------
+  // Utilidades y acciones
+  // -------------------------------------------------------------------------
   const showNotice = (message, type = 'success') => setNotice({ message, type });
   const navigate = (nextScreen) => {
     setNotice(null);
     setScreen(nextScreen);
   };
 
+  const notify = (notification) => {
+    setNotifications((current) => appendNotification(current, notification));
+  };
+
   const openProduct = (product, fromScreen = screen) => {
     setSelectedProductId(product.id);
     setDetailBackScreen(fromScreen);
+    setSelectedVariantId(null);
+    setDetailQuantity(1);
     setRatingSelection(0);
+    setQuestionDraft('');
     navigate('detail');
   };
 
@@ -250,37 +459,56 @@ export default function App() {
     showNotice(isSaved ? 'Producto eliminado de favoritos.' : 'Producto guardado en favoritos.');
   };
 
-  const addToCart = (product) => {
-    const quantity = cart[product.id] || 0;
-    if (product.stock <= 0) {
-      showNotice('Este producto está agotado y no se puede agregar.', 'error');
+  const toggleCompare = (product) => {
+    if (compareIds.includes(product.id)) {
+      setCompareIds((current) => removeFromCompare(current, product.id));
+      showNotice(`${product.name} se quitó del comparador.`);
       return;
     }
-    if (quantity >= product.stock) {
-      showNotice(`Solo hay ${product.stock} unidades disponibles de este producto.`, 'error');
+    const result = addToCompare(compareIds, product.id);
+    if (result.error) {
+      showNotice(result.error, 'error');
       return;
     }
-    setCart((current) => ({ ...current, [product.id]: (current[product.id] || 0) + 1 }));
-    showNotice(`${product.name} se agregó al carrito.`);
+    setCompareIds(result.list);
+    showNotice(`${product.name} se agregó al comparador (${result.list.length}/3).`);
   };
 
-  const decreaseCartItem = (productId) => {
-    const currentQuantity = cart[productId] || 0;
-    setCart((current) => {
-      const next = { ...current };
-      if (currentQuantity <= 1) delete next[productId];
-      else next[productId] = currentQuantity - 1;
-      return next;
-    });
-    showNotice(currentQuantity <= 1 ? 'El producto se quitó del carrito.' : 'Cantidad actualizada.');
+  const addToCart = (product, variantId = null, quantity = 1) => {
+    const error = validateCartLine(product, variantId, quantity);
+    if (error) {
+      showNotice(error, 'error');
+      return false;
+    }
+    const currentQuantity = getCartLineQuantity(cart, product, variantId);
+    const max = getLineInfo(product, variantId).stock;
+    if (currentQuantity + quantity > max) {
+      showNotice(`Stock insuficiente. Ya tienes ${currentQuantity} en el carrito; el máximo permitido es ${max}.`, 'error');
+      return false;
+    }
+    const label = variantId ? `${product.name} · ${getVariant(product, variantId)?.label}` : product.name;
+    setCart((current) => setCartLine(current, product, variantId, currentQuantity + quantity));
+    showNotice(`${label} × ${quantity} se agregó al carrito.`);
+    return true;
   };
 
-  const removeCartItem = (productId) => {
-    setCart((current) => {
-      const next = { ...current };
-      delete next[productId];
-      return next;
-    });
+  const changeCartLine = (line, delta) => {
+    const nextQuantity = line.quantity + delta;
+    if (nextQuantity <= 0) {
+      setCart((current) => setCartLine(current, line.product, line.variantId, 0));
+      showNotice('El producto se quitó del carrito.');
+      return;
+    }
+    if (nextQuantity > line.stock) {
+      showNotice(`No hay más stock. El máximo permitido es ${line.stock}.`, 'error');
+      return;
+    }
+    setCart((current) => setCartLine(current, line.product, line.variantId, nextQuantity));
+    showNotice('Cantidad actualizada.');
+  };
+
+  const removeCartLine = (line) => {
+    setCart((current) => setCartLine(current, line.product, line.variantId, 0));
     showNotice('El producto se eliminó del carrito.');
   };
 
@@ -294,6 +522,106 @@ export default function App() {
     showNotice('Cupón BIENVENIDO10 aplicado: 10 % de descuento.');
   };
 
+  const resetFilters = () => {
+    setFilters(EMPTY_FILTERS);
+    setFilterError('');
+    setSearch('');
+    setCategory('Todas');
+    showNotice('Filtros restablecidos. Catálogo completo.');
+  };
+
+  const applyFilters = () => {
+    const error = validatePriceRange(filters.minPrice, filters.maxPrice);
+    setFilterError(error);
+    if (error) {
+      showNotice(error, 'error');
+      return;
+    }
+    showNotice('Filtros aplicados al catálogo.');
+  };
+
+  // HU24
+  const submitQuestion = () => {
+    const error = validateQuestion(questionDraft);
+    if (error) {
+      showNotice(error, 'error');
+      return;
+    }
+    setQuestions((current) => [createQuestion(selectedProduct.id, questionDraft), ...current]);
+    setQuestionDraft('');
+    showNotice('Pregunta enviada. Estado: Pendiente (respuesta simulada).');
+  };
+
+  const answerQuestion = (question) => {
+    setQuestions((current) => current.map((item) => (
+      item.id === question.id ? simulateQuestionAnswer(item) : item
+    )));
+    showNotice('Respuesta simulada agregada a la pregunta.');
+  };
+
+  // HU25
+  const submitAddress = () => {
+    const result = saveAddressRule(addresses, addressForm, editingAddressId);
+    if (result.error) {
+      showNotice(result.error, 'error');
+      return;
+    }
+    setAddresses(result.addresses);
+    setAddressForm(EMPTY_ADDRESS_FORM);
+    setEditingAddressId(null);
+    showNotice(editingAddressId ? 'Dirección actualizada sin duplicar registros.' : 'Dirección agregada a tu libreta.');
+  };
+
+  const editAddress = (address) => {
+    setEditingAddressId(address.id);
+    setAddressForm({ alias: address.alias, municipality: address.municipality, reference: address.reference, principal: address.principal });
+    setNotice(null);
+  };
+
+  const makePrincipal = (address) => {
+    const result = setPrincipalAddress(addresses, address.id);
+    if (result.error) {
+      showNotice(result.error, 'error');
+      return;
+    }
+    setAddresses(result.addresses);
+    setSelectedAddressId(result.selectedAddressId);
+    showNotice(`${address.alias} es ahora la dirección principal y la seleccionada.`);
+  };
+
+  // HU30
+  const toggleStockAlert = (variantId) => {
+    const key = makeCartKey(selectedProduct.id, variantId);
+    const existing = stockAlerts.find((alert) => alert.id === key);
+    if (existing?.active) {
+      setStockAlerts((current) => current.map((alert) => (alert.id === key ? { ...alert, active: false } : alert)));
+      showNotice('Aviso de reposición cancelado.');
+      return;
+    }
+    setStockAlerts((current) => [
+      ...current.filter((alert) => alert.id !== key),
+      createStockAlert(selectedProduct.id, variantId),
+    ]);
+    showNotice('Te avisaremos cuando haya stock (aviso único por artículo).');
+  };
+
+  const simulateRestock = (variantId, units) => {
+    setProducts((current) => current.map((product) => (
+      product.id === selectedProduct.id ? restockLine(product, variantId, units) : product
+    )));
+    const alert = stockAlerts.find((item) => (
+      item.productId === selectedProduct.id && item.variantId === variantId && item.active
+    ));
+    if (alert) {
+      notify(buildRestockNotification(selectedProduct, variantId, units));
+      showNotice('Reposición simulada y aviso enviado al centro de notificaciones.');
+    } else {
+      showNotice('Reposición simulada realizada (no había aviso activo para este artículo).');
+    }
+    setStockAlerts((current) => current.filter((item) => item.id !== makeCartKey(selectedProduct.id, variantId)));
+  };
+
+  // Checkout / compra
   const startCheckout = () => {
     const error = validateCart(cart, products);
     if (error) {
@@ -305,9 +633,27 @@ export default function App() {
   };
 
   const continueToReview = () => {
-    const error = validateBuyer(buyer);
+    if (!selectedAddress) {
+      showNotice('Selecciona una dirección de entrega antes de continuar al pago simulado.', 'error');
+      return;
+    }
+    const deliveryBuyer = {
+      ...buyer,
+      municipality: selectedAddress.municipality,
+      address: selectedAddress.reference,
+      addressAlias: selectedAddress.alias,
+    };
+    const error = validateBuyer(deliveryBuyer);
     if (error) {
       showNotice(error, 'error');
+      return;
+    }
+    if (!shippingModal) {
+      showNotice('Selecciona la modalidad de envío antes de continuar.', 'error');
+      return;
+    }
+    if (!shippingQuote?.supported) {
+      showNotice(shippingQuote?.message || 'No es posible calcular el envío con esos datos.', 'error');
       return;
     }
     setCheckoutStep('review');
@@ -315,11 +661,18 @@ export default function App() {
   };
 
   const confirmOrder = () => {
+    const buyerData = {
+      ...buyer,
+      municipality: selectedAddress.municipality,
+      address: selectedAddress.reference,
+      addressAlias: selectedAddress.alias,
+    };
     const result = createConfirmedOrder({
       cart,
       products,
-      buyer,
+      buyer: buyerData,
       couponApplied,
+      shippingQuote,
       randomPart: `${orders.length + 1}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
     });
     if (result.error) {
@@ -333,6 +686,12 @@ export default function App() {
     setCouponCode('');
     setBuyer(EMPTY_BUYER);
     setConfirmedOrder(result.order);
+    notify(makeNotification({
+      type: 'pedido',
+      message: `Pedido ${result.order.code} confirmado por ${formatPrice(result.order.total)}.`,
+      reference: result.order.code,
+      dedupeKey: `pedido-${result.order.code}-Confirmado`,
+    }));
     navigate('confirmation');
   };
 
@@ -351,26 +710,10 @@ export default function App() {
     showNotice('¡Gracias! Tu valoración simulada quedó registrada.');
   };
 
-  const editProduct = (product) => {
-    setEditingProductId(product.id);
-    setSellerForm({
-      name: product.name,
-      category: product.category,
-      price: String(product.price),
-      stock: String(product.stock),
-      description: product.description,
-    });
-    setNotice(null);
-  };
-
-  const clearSellerForm = () => {
-    setEditingProductId(null);
-    setSellerForm({ name: '', category: CATEGORIES[0], price: '', stock: '0', description: '' });
-  };
-
   const saveSellerProduct = () => {
     const productData = {
       ...sellerForm,
+      brand: sellerForm.brand || 'SWAREH',
       price: Number(sellerForm.price),
       stock: Number(sellerForm.stock),
     };
@@ -381,7 +724,7 @@ export default function App() {
     }
     if (editingProductId) {
       setProducts((current) => current.map((product) => (
-        product.id === editingProductId ? { ...product, ...productData } : product
+        product.id === editingProductId ? syncProductStock({ ...product, ...productData }) : product
       )));
       showNotice('Producto actualizado sin duplicar su referencia.');
     } else {
@@ -390,19 +733,110 @@ export default function App() {
         return match ? Math.max(largest, Number(match[1])) : largest;
       }, 0) + 1;
       const iconByCategory = { 'Periféricos': '⌁', GPU: '▰', CPU: '▦', Almacenamiento: '▱' };
-      const newProduct = {
+      setProducts((current) => [...current, {
         ...productData,
         id: `PROD-${String(nextNumber).padStart(3, '0')}`,
         icon: iconByCategory[productData.category],
         short: productData.name.slice(0, 12).toUpperCase(),
         ratings: [],
-      };
-      setProducts((current) => [...current, newProduct]);
+      }]);
       showNotice('Producto creado y agregado al catálogo.');
     }
-    clearSellerForm();
+    setEditingProductId(null);
+    setSellerForm({ name: '', category: CATEGORIES[0], price: '', stock: '0', description: '' });
   };
 
+  // HU27 / HU28
+  const advanceStatus = (order) => {
+    const result = advanceOrderStatus(order);
+    if (result.error) {
+      showNotice(result.error, 'error');
+      return;
+    }
+    setOrders((current) => current.map((item) => (
+      (item.id || item.code) === (order.id || order.code) ? result.order : item
+    )));
+    notify(result.notification);
+    showNotice(`Pedido avanzó a ${result.order.status}.`);
+  };
+
+  const requestCancel = (order) => {
+    if (!CANCELABLE_STATUS.includes(order.status)) {
+      showNotice('No se puede cancelar: solo se cancelan pedidos Confirmado o Preparando, antes del despacho simulado.', 'error');
+      return;
+    }
+    setDialog({
+      title: 'Cancelar pedido simulado',
+      message: `¿Confirmas la cancelación de ${order.code}? El pedido permanecerá en el historial.${
+        order.stockDeducted
+          ? ' El inventario se restituirá una sola vez.'
+          : ' Es un pedido de prueba histórico: su stock ya estaba descontado en el catálogo inicial.'
+      }`,
+      confirmLabel: 'Sí, cancelar',
+      onConfirm: () => {
+        const result = cancelOrder(order, products);
+        setDialog(null);
+        if (result.error) {
+          showNotice(result.error, 'error');
+          return;
+        }
+        setProducts(result.nextProducts);
+        setOrders((current) => current.map((item) => (
+          (item.id || item.code) === (order.id || order.code) ? result.order : item
+        )));
+        notify(result.notification);
+        showNotice(order.stockDeducted
+          ? 'Pedido cancelado. Inventario restituido una sola vez.'
+          : 'Pedido de prueba cancelado. Su stock histórico no se duplica.');
+      },
+    });
+  };
+
+  const loadDemoOrders = () => {
+    const demos = createDemoOrders(products);
+    setOrders((current) => {
+      const existing = new Set(current.map((order) => order.code));
+      return [...demos.filter((order) => !existing.has(order.code)), ...current];
+    });
+    showNotice('Pedidos de prueba cargados en modo demostración.');
+  };
+
+  // HU29
+  const markNotificationRead = (notification) => {
+    setNotifications((current) => current.map((item) => (
+      item.id === notification.id ? { ...item, read: true } : item
+    )));
+    showNotice('Aviso marcado como leído.');
+  };
+
+  // HU32
+  const submitTicket = () => {
+    const error = validateSupportRequest(helpForm.orderCode, helpForm.description);
+    if (error) {
+      showNotice(error, 'error');
+      return;
+    }
+    const ticket = createSupportTicket(helpForm);
+    setTickets((current) => [ticket, ...current]);
+    setHelpForm(EMPTY_HELP_FORM);
+    showNotice(`Caso ${ticket.id} creado con estado Abierto.`);
+    notify(makeNotification({
+      type: 'soporte',
+      message: `Caso ${ticket.id} abierto para el pedido ${ticket.orderCode}.`,
+      reference: ticket.id,
+    }));
+  };
+
+  const answerTicket = (ticket) => {
+    setTickets((current) => current.map((item) => (
+      item.id === ticket.id ? simulateTicketReply(item) : item
+    )));
+    showNotice('Respuesta simulada agregada al caso.');
+  };
+
+  // -------------------------------------------------------------------------
+  // Pantallas
+  // -------------------------------------------------------------------------
   const renderProductCards = (list, source) => (
     <View style={styles.productGrid}>
       {list.map((product) => (
@@ -410,28 +844,69 @@ export default function App() {
           key={product.id}
           product={product}
           isFavorite={favorites.includes(product.id)}
-          cartQuantity={cart[product.id] || 0}
+          cartQuantity={getCartLineQuantity(cart, product, null) + (product.variants || []).reduce(
+            (sum, variant) => sum + getCartLineQuantity(cart, product, variant.id), 0,
+          )}
+          isCompared={compareIds.includes(product.id)}
           onOpen={() => openProduct(product, source)}
-          onAdd={() => addToCart(product)}
+          onAdd={() => (product.variants?.length ? openProduct(product, source) : addToCart(product))}
           onToggleFavorite={() => toggleFavorite(product)}
+          onToggleCompare={() => toggleCompare(product)}
         />
       ))}
+    </View>
+  );
+
+  const renderFilters = () => (
+    <View style={styles.filterCard}>
+      <Pressable onPress={() => setShowFilters((value) => !value)} style={styles.filterHeader}>
+        <Text style={styles.filterHeaderText}>⚙  Filtros combinados{showFilters ? '  ▴' : '  ▾'}</Text>
+      </Pressable>
+      {showFilters ? (
+        <View>
+          <Text style={styles.fieldLabel}>Marca</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+            {['Todas', ...BRANDS].map((brand) => (
+              <Chip key={brand} label={brand} active={filters.brand === brand} onPress={() => setFilters((current) => ({ ...current, brand }))} />
+            ))}
+          </ScrollView>
+          <View style={styles.numericRow}>
+            <View style={styles.halfField}>
+              <Field label="Precio mínimo" value={filters.minPrice} onChangeText={(minPrice) => setFilters((current) => ({ ...current, minPrice }))} keyboardType="numeric" placeholder="Ej. 100000" />
+            </View>
+            <View style={styles.halfField}>
+              <Field label="Precio máximo" value={filters.maxPrice} onChangeText={(maxPrice) => setFilters((current) => ({ ...current, maxPrice }))} keyboardType="numeric" placeholder="Ej. 500000" />
+            </View>
+          </View>
+          {filterError ? <Text style={styles.errorText}>{filterError}</Text> : null}
+          <Pressable onPress={() => setFilters((current) => ({ ...current, onlyAvailable: !current.onlyAvailable }))} style={styles.checkRow} accessibilityRole="button">
+            <View style={[styles.checkBox, filters.onlyAvailable && styles.checkBoxActive]}>
+              {filters.onlyAvailable ? <Text style={styles.checkMark}>✓</Text> : null}
+            </View>
+            <Text style={styles.checkLabel}>Solo productos disponibles</Text>
+          </Pressable>
+          <View style={styles.filterActions}>
+            <View style={styles.halfField}><ActionButton label="Aplicar filtros" onPress={applyFilters} compact /></View>
+            <View style={styles.halfField}><ActionButton label="Restablecer" onPress={resetFilters} secondary compact /></View>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 
   const renderCatalog = () => (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
       <View style={styles.hero}>
-        <Text style={styles.eyebrow}>POTENCIA A TU MEDIDA</Text>
+        <Text style={styles.eyebrow}>POTENCIA A TU MEDIDA · 2.0</Text>
         <Text style={styles.heroTitle}>Arma tu próximo gran setup.</Text>
-        <Text style={styles.heroCopy}>Para aficionados a las computadoras: componentes para tareas suaves o fuertes.</Text>
+        <Text style={styles.heroCopy}>Compara, elige variantes, consulta envíos y sigue tus pedidos en una sola app.</Text>
       </View>
       <View style={styles.searchBox}>
         <Text style={styles.searchIcon}>⌕</Text>
         <TextInput
           value={search}
           onChangeText={setSearch}
-          placeholder="Busca por nombre de producto"
+          placeholder="Busca por nombre, categoría o marca"
           placeholderTextColor="#94A0B0"
           style={styles.searchInput}
           accessibilityLabel="Buscar productos"
@@ -440,11 +915,10 @@ export default function App() {
       <SectionTitle title="Categorías" subtitle="Elige el componente para tu setup" />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRow}>
         {['Todas', ...CATEGORIES].map((item) => (
-          <Pressable key={item} onPress={() => setCategory(item)} style={[styles.categoryChip, category === item && styles.categoryChipActive]}>
-            <Text style={[styles.categoryText, category === item && styles.categoryTextActive]}>{item}</Text>
-          </Pressable>
+          <Chip key={item} label={item} active={category === item} onPress={() => setCategory(item)} />
         ))}
       </ScrollView>
+      {renderFilters()}
       <View style={styles.listHeading}>
         <View>
           <Text style={styles.sectionTitle}>Catálogo</Text>
@@ -452,24 +926,31 @@ export default function App() {
         </View>
         <View style={styles.sortControls}>
           {[['featured', 'Destacados'], ['asc', 'Menor a mayor'], ['desc', 'Mayor a menor']].map(([value, label]) => (
-            <Pressable key={value} onPress={() => setSort(value)} style={[styles.sortChip, sort === value && styles.sortChipActive]}>
-              <Text style={[styles.sortText, sort === value && styles.sortTextActive]}>{label}</Text>
-            </Pressable>
+            <Chip key={value} label={label} active={sort === value} onPress={() => setSort(value)} />
           ))}
         </View>
       </View>
+      <Pressable onPress={() => navigate('compare')} style={styles.compareBanner} accessibilityRole="button">
+        <Text style={styles.compareBannerText}>⚖  Comparador  ({compareIds.length}/3) ›</Text>
+      </Pressable>
       {filteredProducts.length
         ? renderProductCards(filteredProducts, 'catalog')
-        : <EmptyState title="No encontramos productos" message="Prueba con otra palabra o cambia la categoría." action="Ver todo el catálogo" onPress={() => { setSearch(''); setCategory('Todas'); }} />}
-      <Text style={styles.trustNote}>✓  Compra simulada · Precios en pesos colombianos</Text>
+        : <EmptyState title="No encontramos productos" message="Prueba con otra palabra, cambia la categoría o restablece los filtros." action="Restablecer filtros" onPress={resetFilters} />}
+      <Text style={styles.trustNote}>✓  Compra simulada · Precios en pesos colombianos · Avisos y respuestas de demostración</Text>
     </ScrollView>
   );
 
   const renderDetail = () => {
     if (!selectedProduct) return null;
-    const stockAvailable = selectedProduct.stock > 0;
+    const hasVariants = Array.isArray(selectedProduct.variants) && selectedProduct.variants.length > 0;
+    const stock = hasVariants ? selectedVariantInfo.stock : getProductStock(selectedProduct);
     const stats = getRatingStats(selectedProduct.ratings);
     const isFavorite = favorites.includes(selectedProduct.id);
+    const alreadyInCart = hasVariants
+      ? getCartLineQuantity(cart, selectedProduct, selectedVariantId)
+      : getCartLineQuantity(cart, selectedProduct, null);
+    const maxQuantity = Math.max(0, stock - alreadyInCart);
+    const price = hasVariants && selectedVariant ? selectedVariant.price : selectedProduct.price;
     return (
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         <Pressable onPress={() => navigate(detailBackScreen)} style={styles.backButton}>
@@ -478,22 +959,90 @@ export default function App() {
         <ProductArtwork product={selectedProduct} large />
         <View style={styles.detailCard}>
           <View style={styles.detailMetaRow}>
-            <Text style={styles.detailCategory}>{selectedProduct.category.toUpperCase()}</Text>
-            <Text style={styles.detailRating}>{stats.count ? `★ ${stats.average} · ${stats.count} valoraciones` : 'Sin valoraciones'}</Text>
+            <Text style={styles.detailCategory}>{selectedProduct.brand} · {selectedProduct.category.toUpperCase()}</Text>
+            <Text style={styles.detailRating}>{stats.count ? `★ ${stats.average} · ${stats.count}` : 'Sin valoraciones'}</Text>
           </View>
           <Text style={styles.detailTitle}>{selectedProduct.name}</Text>
-          <Text style={styles.detailPrice}>{formatPrice(selectedProduct.price)}</Text>
-          <Text style={styles.stockLabel}>{stockAvailable ? `${selectedProduct.stock} unidades disponibles` : 'Agotado'}</Text>
+          <Text style={styles.detailPrice}>{formatPrice(price)}</Text>
+          <Text style={[styles.stockLabel, stock === 0 && styles.outOfStock]}>
+            {stock === 0 ? 'Agotado' : `${stock} unidades disponibles`}
+          </Text>
           <Text style={styles.description}>{selectedProduct.description}</Text>
+
+          {hasVariants ? (
+            <View style={styles.variantBlock}>
+              <SectionTitle title="Elige una variante" subtitle="Switch, color o presentación según el producto" />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                {selectedProduct.variants.map((variant) => (
+                  <Pressable
+                    key={variant.id}
+                    onPress={() => { setSelectedVariantId(variant.id); setDetailQuantity(1); }}
+                    disabled={variant.stock === 0}
+                    style={[styles.variantChip, selectedVariantId === variant.id && styles.variantChipActive, variant.stock === 0 && styles.variantChipDisabled]}
+                    accessibilityRole="button"
+                  >
+                    <Text style={[styles.variantLabel, selectedVariantId === variant.id && styles.variantLabelActive]}>{variant.label}</Text>
+                    <Text style={[styles.variantPrice, selectedVariantId === variant.id && styles.variantLabelActive]}>{formatPrice(variant.price)}</Text>
+                    <Text style={[styles.variantStock, variant.stock === 0 && styles.outOfStock]}>
+                      {variant.stock === 0 ? 'Agotada' : `${variant.stock} und.`}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              {selectedVariant ? (
+                <View style={styles.selectedVariantBox}>
+                  <Text style={styles.selectedVariantText}>
+                    Seleccionada: {selectedVariant.label} · {formatPrice(selectedVariant.price)} · {selectedVariant.stock} disponibles
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.hintText}>Selecciona una opción para ver su precio y disponibilidad específicos.</Text>
+              )}
+              <View style={styles.quantityRow}>
+                <Text style={styles.fieldLabel}>Cantidad</Text>
+                <QuantityControl
+                  quantity={detailQuantity}
+                  onDecrease={() => setDetailQuantity((value) => Math.max(1, value - 1))}
+                  onIncrease={() => {
+                    if (detailQuantity >= maxQuantity) {
+                      showNotice(`El máximo permitido es ${maxQuantity} unidades de esta variante.`, 'error');
+                      return;
+                    }
+                    setDetailQuantity((value) => value + 1);
+                  }}
+                  canIncrease={detailQuantity < maxQuantity}
+                />
+              </View>
+            </View>
+          ) : null}
+
           <View style={styles.detailActions}>
             <ActionButton label={isFavorite ? '♥ En favoritos' : '♡ Favorito'} secondary compact onPress={() => toggleFavorite(selectedProduct)} />
             <ActionButton
-              label={!stockAvailable ? 'Agotado' : cart[selectedProduct.id] >= selectedProduct.stock ? 'Stock en carrito' : 'Agregar al carrito'}
-              onPress={() => addToCart(selectedProduct)}
-              disabled={!stockAvailable || (cart[selectedProduct.id] || 0) >= selectedProduct.stock}
+              label={stock === 0 ? 'Agotado' : 'Agregar al carrito'}
+              disabled={stock === 0}
+              onPress={() => {
+                const variantId = hasVariants ? selectedVariantId : null;
+                if (addToCart(selectedProduct, variantId, detailQuantity) && hasVariants) setDetailQuantity(1);
+              }}
               compact
             />
           </View>
+
+          {stock === 0 ? (
+            <View style={styles.demoBox}>
+              <Text style={styles.demoTitle}>Modo demostración · Reposición</Text>
+              <Text style={styles.demoCopy}>Esta variante está agotada. Puedes solicitar un aviso y simular la reposición para probar el centro de notificaciones.</Text>
+              <ActionButton
+                label={activeAlert ? '✓ Aviso activo (cancelar)' : 'Avisarme cuando haya stock'}
+                secondary
+                compact
+                onPress={() => toggleStockAlert(hasVariants ? selectedVariantId : null)}
+              />
+              <ActionButton label="Simular reposición (+3 und.)" onPress={() => simulateRestock(hasVariants ? selectedVariantId : null, 3)} compact />
+            </View>
+          ) : null}
+
           <View style={styles.divider} />
           <SectionTitle title="Valora este producto" subtitle="Reseña ficticia para el prototipo" />
           <View style={styles.starsRow}>
@@ -506,9 +1055,99 @@ export default function App() {
           </View>
           <ActionButton label="Guardar valoración" onPress={submitRating} disabled={!ratingSelection} compact />
         </View>
+
+        <View style={styles.detailCardSpaced}>
+          <SectionTitle title="Preguntas del producto" subtitle="Respuestas simuladas en modo demostración" />
+          {productQuestions.length === 0
+            ? <Text style={styles.hintText}>Sé la primera persona en preguntar sobre este artículo.</Text>
+            : productQuestions.map((question) => (
+              <View key={question.id} style={styles.questionCard}>
+                <Text style={styles.questionText}>{question.question}</Text>
+                <Text style={styles.questionMeta}>{new Date(question.date).toLocaleDateString('es-CO')} · {question.status}</Text>
+                {question.status === 'Respondida' ? (
+                  <Text style={styles.answerText}>{question.answer}</Text>
+                ) : (
+                  <ActionButton label="Simular respuesta" onPress={() => answerQuestion(question)} secondary compact />
+                )}
+              </View>
+            ))}
+          <Field
+            label="Escribe tu pregunta (mínimo 10 caracteres)"
+            value={questionDraft}
+            onChangeText={setQuestionDraft}
+            placeholder="Ej. ¿Incluye garantía este componente?"
+            multiline
+            maxLength={240}
+          />
+          <ActionButton label="Enviar pregunta" onPress={submitQuestion} compact />
+        </View>
+
+        <View style={styles.detailCardSpaced}>
+          <SectionTitle title="Productos relacionados" subtitle="Misma categoría, otros artículos con stock" />
+          {recommendations.length === 0 ? (
+            <EmptyState title="Sin recomendaciones" message="No hay otros artículos disponibles en esta categoría." />
+          ) : (
+            <View style={styles.productGrid}>
+              {recommendations.map((product) => (
+                <ProductCard
+                  key={product.id}
+                  product={product}
+                  isFavorite={favorites.includes(product.id)}
+                  cartQuantity={getCartLineQuantity(cart, product, null)}
+                  isCompared={compareIds.includes(product.id)}
+                  onOpen={() => openProduct(product, 'detail')}
+                  onAdd={() => (product.variants?.length ? openProduct(product, 'detail') : addToCart(product))}
+                  onToggleFavorite={() => toggleFavorite(product)}
+                  onToggleCompare={() => toggleCompare(product)}
+                />
+              ))}
+            </View>
+          )}
+        </View>
       </ScrollView>
     );
   };
+
+  const renderCompare = () => (
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <Pressable onPress={() => navigate(detailBackScreen === 'compare' ? 'catalog' : detailBackScreen)} style={styles.backButton}>
+        <Text style={styles.backArrow}>‹</Text><Text style={styles.backText}>Volver</Text>
+      </Pressable>
+      <SectionTitle title="Comparador de productos" subtitle={`${compareProducts.length} de 3 seleccionados · Máximo tres`} />
+      {compareProducts.length === 0 ? (
+        <EmptyState title="Aún no hay productos para comparar" message="Marca «Comp» en dos o tres tarjetas del catálogo." action="Ir al catálogo" onPress={() => navigate('catalog')} />
+      ) : (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View style={styles.compareTable}>
+            {[
+              ['Producto', (p) => p.name],
+              ['Marca', (p) => p.brand],
+              ['Precio', (p) => formatPrice(p.price)],
+              ['Disponibilidad', (p) => (getProductStock(p) > 0 ? `${getProductStock(p)} disponibles` : 'Agotado')],
+              ['Categoría', (p) => p.category],
+              ['Acción', null],
+            ].map(([label, getValue]) => (
+              <View key={label} style={styles.compareRow}>
+                <View style={styles.compareLabelCell}><Text style={styles.compareLabelText}>{label}</Text></View>
+                {compareProducts.map((product) => (
+                  <View key={product.id} style={styles.compareCell}>
+                    {getValue ? (
+                      <Text style={styles.compareCellText}>{getValue(product)}</Text>
+                    ) : (
+                      <Pressable onPress={() => toggleCompare(product)} style={styles.compareRemove}>
+                        <Text style={styles.compareRemoveText}>Quitar</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                ))}
+              </View>
+            ))}
+          </View>
+        </ScrollView>
+      )}
+      <Text style={styles.hintText}>La comparación no modifica tu carrito, tus favoritos ni el inventario.</Text>
+    </ScrollView>
+  );
 
   const renderFavorites = () => {
     const favoriteProducts = products.filter((product) => favorites.includes(product.id));
@@ -525,39 +1164,46 @@ export default function App() {
   const renderSummary = () => (
     <View style={styles.summaryCard}>
       <Text style={styles.summaryTitle}>Resumen de compra</Text>
-      <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Subtotal</Text><Text style={styles.summaryValue}>{formatPrice(totals.subtotal)}</Text></View>
-      <View style={styles.summaryRow}>
-        <Text style={styles.summaryLabel}>Envío</Text>
-        <Text style={styles.summaryValue}>{totals.subtotal === 0 ? formatPrice(0) : totals.shipping === 0 ? 'Gratis' : formatPrice(SHIPPING_FEE)}</Text>
-      </View>
-      {totals.discount > 0 && <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Cupón BIENVENIDO10</Text><Text style={styles.discountValue}>−{formatPrice(totals.discount)}</Text></View>}
+      <InfoRow label="Subtotal" value={formatPrice(totals.subtotal)} />
+      <InfoRow
+        label={shippingQuote?.supported ? `Envío ${shippingQuote.label} · ${shippingQuote.days}` : 'Envío (estimación)'}
+        value={totals.subtotal === 0 ? formatPrice(0) : totals.shipping === 0 ? 'Gratis' : formatPrice(totals.shipping)}
+      />
+      {totals.discount > 0 && <InfoRow label="Cupón BIENVENIDO10" value={`−${formatPrice(totals.discount)}`} negative />}
       <View style={styles.divider} />
-      <View style={styles.summaryRow}><Text style={styles.totalLabel}>Total</Text><Text style={styles.totalValue}>{formatPrice(totals.total)}</Text></View>
-      <Text style={styles.summaryFootnote}>{totals.subtotal === 0 ? 'Agrega productos para calcular el envío.' : totals.subtotal >= 150000 ? 'Envío gratis desde $150.000' : 'El envío cuesta $8.000 para compras menores a $150.000.'}</Text>
+      <InfoRow label="Total" value={formatPrice(totals.total)} emphasis />
+      <Text style={styles.summaryFootnote}>
+        {shippingQuote?.supported
+          ? `Tarifa ficticia para ${shippingQuote.municipality} (${shippingQuote.label}). El cargo se incluye una sola vez.`
+          : totals.subtotal === 0
+            ? 'Agrega productos para calcular el envío.'
+            : 'El envío final se calcula al elegir dirección y modalidad en la entrega.'}
+      </Text>
     </View>
   );
 
   const renderCart = () => (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
       <SectionTitle title="Tu carrito" subtitle={`${cartCount} ${cartCount === 1 ? 'unidad seleccionada' : 'unidades seleccionadas'}`} />
-      {cartItems.length === 0 ? (
+      {cartLines.length === 0 ? (
         <EmptyState title="Tu carrito está vacío" message="Explora el catálogo y prepara tu pedido." action="Ir al catálogo" onPress={() => navigate('catalog')} />
       ) : (
-        cartItems.map((product) => (
-          <View key={product.id} style={styles.cartItem}>
-            <Pressable onPress={() => openProduct(product, 'cart')}><ProductArtwork product={product} /></Pressable>
+        cartLines.map((line) => (
+          <View key={line.key} style={styles.cartItem}>
+            <Pressable onPress={() => openProduct(line.product, 'cart')}><ProductArtwork product={line.product} /></Pressable>
             <View style={styles.cartItemInfo}>
-              <Text style={styles.productCategory}>{product.category}</Text>
-              <Text style={styles.cartProductName}>{product.name}</Text>
-              <Text style={styles.productPrice}>{formatPrice(product.price)}</Text>
+              <Text style={styles.productCategory}>{line.product.brand}</Text>
+              <Text style={styles.cartProductName}>{line.product.name}</Text>
+              {line.variantLabel ? <Text style={styles.variantTag}>Variante: {line.variantLabel}</Text> : null}
+              <Text style={styles.productPrice}>{formatPrice(line.price)} c/u</Text>
               <View style={styles.cartControls}>
                 <QuantityControl
-                  quantity={cart[product.id]}
-                  onDecrease={() => decreaseCartItem(product.id)}
-                  onIncrease={() => addToCart(product)}
-                  canIncrease={cart[product.id] < product.stock}
+                  quantity={line.quantity}
+                  onDecrease={() => changeCartLine(line, -1)}
+                  onIncrease={() => changeCartLine(line, 1)}
+                  canIncrease={line.quantity < line.stock}
                 />
-                <Pressable onPress={() => removeCartItem(product.id)}><Text style={styles.removeText}>Eliminar</Text></Pressable>
+                <Pressable onPress={() => removeCartLine(line)}><Text style={styles.removeText}>Eliminar</Text></Pressable>
               </View>
             </View>
           </View>
@@ -582,13 +1228,63 @@ export default function App() {
       <Pressable onPress={() => checkoutStep === 'review' ? setCheckoutStep('form') : navigate('cart')} style={styles.backButton}>
         <Text style={styles.backArrow}>‹</Text><Text style={styles.backText}>{checkoutStep === 'review' ? 'Volver a los datos' : 'Volver al carrito'}</Text>
       </Pressable>
-      <SectionTitle title={checkoutStep === 'form' ? 'Datos de entrega' : 'Revisa tu pedido'} subtitle="No solicitamos datos de pago ni documentos personales." />
+      <SectionTitle
+        title={checkoutStep === 'form' ? 'Datos de entrega y envío' : 'Revisa tu pedido'}
+        subtitle="No solicitamos datos de pago ni documentos personales."
+      />
       {checkoutStep === 'form' ? (
         <View style={styles.formCard}>
           <Field label="Nombre" value={buyer.name} onChangeText={(name) => setBuyer((current) => ({ ...current, name }))} placeholder="Tu nombre" />
           <Field label="Teléfono" value={buyer.phone} onChangeText={(phone) => setBuyer((current) => ({ ...current, phone }))} placeholder="Solo contacto para la entrega" keyboardType="phone-pad" />
-          <Field label="Municipio" value={buyer.municipality} onChangeText={(municipality) => setBuyer((current) => ({ ...current, municipality }))} />
-          <Field label="Dirección" value={buyer.address} onChangeText={(address) => setBuyer((current) => ({ ...current, address }))} placeholder="Dirección de entrega" />
+
+          <SectionTitle title="Dirección de entrega" subtitle="Principal ≠ seleccionada: elige cuál usar en este pedido" />
+          {addresses.length === 0 ? (
+            <EmptyState title="No tienes direcciones" message="Registra una dirección ficticia para continuar." action="Crear dirección" onPress={() => navigate('addresses')} />
+          ) : addresses.map((address) => (
+            <Pressable
+              key={address.id}
+              onPress={() => setSelectedAddressId(address.id)}
+              style={[styles.addressOption, selectedAddressId === address.id && styles.addressOptionActive]}
+              accessibilityRole="button"
+            >
+              <View style={styles.addressOptionInfo}>
+                <Text style={styles.addressAlias}>
+                  {address.alias}{address.principal ? '  ·  Principal' : ''}
+                </Text>
+                <Text style={styles.addressLine}>{address.municipality}</Text>
+                <Text style={styles.addressLine}>{address.reference}</Text>
+              </View>
+              <Text style={[styles.selectLabel, selectedAddressId === address.id && styles.selectLabelActive]}>
+                {selectedAddressId === address.id ? '✓ Elegida' : 'Elegir'}
+              </Text>
+            </Pressable>
+          ))}
+          <ActionButton label="Administrar mis direcciones" onPress={() => navigate('addresses')} secondary compact />
+
+          <SectionTitle title="Modalidad de envío" subtitle="Tarifas ficticias solo para prácticas" />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+            {SHIPPING_MODALITIES.map((modality) => (
+              <Chip
+                key={modality.id}
+                label={`${modality.label} · ${modality.days}`}
+                active={shippingModal === modality.id}
+                onPress={() => setShippingModal(modality.id)}
+              />
+            ))}
+          </ScrollView>
+          {shippingQuote ? (
+            <View style={[styles.quoteBox, !shippingQuote.supported && styles.quoteBoxError]}>
+              <Text style={styles.quoteTitle}>Estimador de envío</Text>
+              <Text style={styles.quoteText}>
+                {shippingQuote.supported
+                  ? `${shippingQuote.municipality} · ${shippingQuote.label}: ${formatPrice(shippingQuote.cost)} · ${shippingQuote.days}`
+                  : shippingQuote.message}
+              </Text>
+              {shippingQuote.supported ? <Text style={styles.quoteText}>Total estimado: {formatPrice(calculateTotals(cart, products, couponApplied, shippingQuote).total)}</Text> : null}
+            </View>
+          ) : (
+            <Text style={styles.hintText}>Selecciona una dirección y una modalidad para conocer el costo y plazo.</Text>
+          )}
           <ActionButton label="Revisar pedido" onPress={continueToReview} />
         </View>
       ) : (
@@ -596,12 +1292,16 @@ export default function App() {
           <View style={styles.formCard}>
             <Text style={styles.summaryTitle}>Entrega para {buyer.name.trim()}</Text>
             <Text style={styles.reviewLine}>{buyer.phone.trim()}</Text>
-            <Text style={styles.reviewLine}>{buyer.address.trim()}, {buyer.municipality.trim()}</Text>
+            <Text style={styles.reviewLine}>{selectedAddress?.alias} · {selectedAddress?.municipality}</Text>
+            <Text style={styles.reviewLine}>{selectedAddress?.reference}</Text>
+            <Text style={styles.reviewLine}>{shippingQuote?.label} · {formatPrice(shippingQuote?.cost)} · {shippingQuote?.days}</Text>
             <View style={styles.divider} />
-            {cartItems.map((product) => (
-              <View key={product.id} style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>{cart[product.id]} × {product.name}</Text>
-                <Text style={styles.summaryValue}>{formatPrice(product.price * cart[product.id])}</Text>
+            {cartLines.map((line) => (
+              <View key={line.key} style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>
+                  {line.quantity} × {line.product.name}{line.variantLabel ? ` (${line.variantLabel})` : ''}
+                </Text>
+                <Text style={styles.summaryValue}>{formatPrice(line.lineTotal)}</Text>
               </View>
             ))}
           </View>
@@ -610,52 +1310,6 @@ export default function App() {
           <Text style={styles.secureCheckout}>La confirmación no genera ningún cobro real.</Text>
         </>
       )}
-    </ScrollView>
-  );
-
-  const renderHistory = () => (
-    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-      <SectionTitle title="Historial de pedidos" subtitle="Tus compras simuladas se guardan en este dispositivo" />
-      {orders.length === 0 ? (
-        <EmptyState title="Todavía no hay pedidos" message="Cuando confirmes una compra simulada, aparecerá aquí." action="Volver al catálogo" onPress={() => navigate('catalog')} />
-      ) : orders.map((order) => (
-        <Pressable key={order.code} onPress={() => { setSelectedOrder(order); navigate('orderDetail'); }} style={styles.orderCard}>
-          <View style={styles.orderCardTop}>
-            <Text style={styles.orderCode}>{order.code}</Text>
-            <Text style={styles.orderTotal}>{formatPrice(order.total)}</Text>
-          </View>
-          <Text style={styles.orderDate}>{new Date(order.date).toLocaleString('es-CO')}</Text>
-          <Text style={styles.orderItems}>{order.items.length} referencias · Simulación sin cobro</Text>
-          <Text style={styles.linkText}>Ver detalle ›</Text>
-        </Pressable>
-      ))}
-    </ScrollView>
-  );
-
-  const renderOrderDetail = () => selectedOrder && (
-    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-      <Pressable onPress={() => navigate('history')} style={styles.backButton}>
-        <Text style={styles.backArrow}>‹</Text><Text style={styles.backText}>Volver al historial</Text>
-      </Pressable>
-      <SectionTitle title="Detalle del pedido" subtitle={selectedOrder.code} />
-      <View style={styles.formCard}>
-        {selectedOrder.items.map((item) => (
-          <View key={item.id} style={styles.orderLine}>
-            <View style={styles.orderItemIcon}><Text style={styles.artIcon}>{item.icon}</Text></View>
-            <View style={styles.orderLineInfo}>
-              <Text style={styles.cartProductName}>{item.name}</Text>
-              <Text style={styles.summaryLabel}>{item.quantity} × {formatPrice(item.price)}</Text>
-            </View>
-            <Text style={styles.summaryValue}>{formatPrice(item.quantity * item.price)}</Text>
-          </View>
-        ))}
-        <View style={styles.divider} />
-        <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Subtotal</Text><Text style={styles.summaryValue}>{formatPrice(selectedOrder.subtotal)}</Text></View>
-        <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Envío</Text><Text style={styles.summaryValue}>{selectedOrder.shipping ? formatPrice(selectedOrder.shipping) : 'Gratis'}</Text></View>
-        {selectedOrder.discount > 0 && <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Descuento</Text><Text style={styles.discountValue}>−{formatPrice(selectedOrder.discount)}</Text></View>}
-        <View style={styles.summaryRow}><Text style={styles.totalLabel}>Total</Text><Text style={styles.totalValue}>{formatPrice(selectedOrder.total)}</Text></View>
-        <Text style={styles.secureCheckout}>Pedido simulado · No se realizó ningún cobro</Text>
-      </View>
     </ScrollView>
   );
 
@@ -668,9 +1322,212 @@ export default function App() {
         <Text style={styles.orderCode}>{confirmedOrder.code}</Text>
         <Text style={styles.totalValue}>{formatPrice(confirmedOrder.total)}</Text>
         <View style={styles.simulationNotice}><Text style={styles.simulationText}>Esta es una simulación académica. No se realizó ningún cobro.</Text></View>
-        <ActionButton label="Ver historial" onPress={() => navigate('history')} />
+        <ActionButton label="Ver seguimiento" onPress={() => { setSelectedOrderCode(confirmedOrder.code); navigate('orderDetail'); }} />
+        <ActionButton label="Ver historial" onPress={() => navigate('history')} secondary compact />
         <ActionButton label="Seguir explorando" onPress={() => navigate('catalog')} secondary compact />
       </View>
+    </ScrollView>
+  );
+
+  const renderHistory = () => (
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <SectionTitle title="Mis pedidos" subtitle="Compras simuladas guardadas en este dispositivo" />
+      {orders.length === 0 ? (
+        <EmptyState title="Todavía no hay pedidos" message="Cuando confirmes una compra simulada, aparecerá aquí." action="Volver al catálogo" onPress={() => navigate('catalog')} />
+      ) : orders.map((order) => (
+        <Pressable
+          key={order.code}
+          onPress={() => { setSelectedOrderCode(order.code); navigate('orderDetail'); }}
+          style={styles.orderCard}
+          accessibilityRole="button"
+        >
+          <View style={styles.orderCardTop}>
+            <Text style={styles.orderCode}>{order.code}</Text>
+            <Text style={styles.orderTotal}>{formatPrice(order.total)}</Text>
+          </View>
+          <Text style={styles.orderDate}>{new Date(order.date).toLocaleString('es-CO')}</Text>
+          <View style={styles.orderMetaRow}>
+            <StatusBadge status={order.status} />
+            <Text style={styles.orderItems}>{order.items.length} referencias</Text>
+          </View>
+          <Text style={styles.linkText}>Ver detalle y seguimiento ›</Text>
+        </Pressable>
+      ))}
+      <ActionButton label="Cargar pedidos de prueba (Simular)" onPress={loadDemoOrders} secondary compact />
+      <Text style={styles.hintText}>Los pedidos de prueba son históricos: cancelarlos no vuelve a sumar stock al catálogo actual.</Text>
+    </ScrollView>
+  );
+
+  const renderOrderDetail = () => selectedOrder && (
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <Pressable onPress={() => navigate('history')} style={styles.backButton}>
+        <Text style={styles.backArrow}>‹</Text><Text style={styles.backText}>Volver a Mis pedidos</Text>
+      </Pressable>
+      <SectionTitle title="Detalle y seguimiento" subtitle={selectedOrder.code} />
+      <View style={styles.formCard}>
+        <StatusBadge status={selectedOrder.status} />
+        <Text style={styles.reviewLine}>{new Date(selectedOrder.date).toLocaleString('es-CO')}</Text>
+        <Text style={styles.reviewLine}>
+          Entrega: {selectedOrder.delivery?.alias} · {selectedOrder.delivery?.municipality}
+        </Text>
+        <View style={styles.divider} />
+        {selectedOrder.items.map((item) => (
+          <View key={item.key || item.id} style={styles.orderLine}>
+            <View style={styles.orderItemIcon}><Text style={styles.artIcon}>{item.icon}</Text></View>
+            <View style={styles.orderLineInfo}>
+              <Text style={styles.cartProductName}>{item.name}</Text>
+              {item.variantLabel ? <Text style={styles.variantTag}>{item.variantLabel}</Text> : null}
+              <Text style={styles.summaryLabel}>{item.quantity} × {formatPrice(item.price)}</Text>
+            </View>
+            <Text style={styles.summaryValue}>{formatPrice(item.quantity * item.price)}</Text>
+          </View>
+        ))}
+        <View style={styles.divider} />
+        <InfoRow label="Subtotal" value={formatPrice(selectedOrder.subtotal)} />
+        <InfoRow label="Envío" value={selectedOrder.shipping ? formatPrice(selectedOrder.shipping) : 'Gratis'} />
+        {selectedOrder.discount > 0 && <InfoRow label="Descuento" value={`−${formatPrice(selectedOrder.discount)}`} negative />}
+        <InfoRow label="Total" value={formatPrice(selectedOrder.total)} emphasis />
+        <Text style={styles.secureCheckout}>Pedido simulado · No se realizó ningún cobro</Text>
+      </View>
+
+      <View style={styles.detailCardSpaced}>
+        <SectionTitle title="Historial cronológico de estados" subtitle="Cada avance queda registrado" />
+        {(selectedOrder.history || []).map((event, index) => (
+          <View key={`${event.status}-${index}`} style={styles.timelineRow}>
+            <View style={styles.timelineDot} />
+            <View style={styles.timelineInfo}>
+              <Text style={styles.timelineStatus}>{event.status}</Text>
+              <Text style={styles.timelineDate}>{new Date(event.date).toLocaleString('es-CO')} · {event.note}</Text>
+            </View>
+          </View>
+        ))}
+        <ActionButton
+          label="Simular avance de entrega"
+          onPress={() => advanceStatus(selectedOrder)}
+          disabled={!NEXT_STATUS[selectedOrder.status]}
+        />
+        {!NEXT_STATUS[selectedOrder.status] ? (
+          <Text style={styles.hintText}>Estado final: no se permiten nuevas transiciones.</Text>
+        ) : null}
+        <ActionButton label="Cancelar pedido" onPress={() => requestCancel(selectedOrder)} secondary compact tone="danger" />
+        <ActionButton label="Solicitar ayuda sobre este pedido" onPress={() => { setHelpForm((current) => ({ ...current, orderCode: selectedOrder.code })); navigate('help'); }} secondary compact />
+      </View>
+    </ScrollView>
+  );
+
+  const renderAddresses = () => (
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <Pressable onPress={() => navigate('checkout')} style={styles.backButton}>
+        <Text style={styles.backArrow}>‹</Text><Text style={styles.backText}>Volver</Text>
+      </Pressable>
+      <SectionTitle title="Mis direcciones" subtitle="Datos ficticios · Nunca solicitamos información real" />
+      {addresses.map((address) => (
+        <View key={address.id} style={styles.addressCard}>
+          <View style={styles.addressCardTop}>
+            <Text style={styles.addressAlias}>{address.alias}{address.principal ? '  ·  Principal' : ''}</Text>
+            {selectedAddressId === address.id ? <Text style={styles.selectLabelActive}>Seleccionada</Text> : null}
+          </View>
+          <Text style={styles.addressLine}>{address.municipality}</Text>
+          <Text style={styles.addressLine}>{address.reference}</Text>
+          <View style={styles.cardActions}>
+            <ActionButton label={address.principal ? 'Principal ✓' : 'Hacer principal'} onPress={() => makePrincipal(address)} secondary compact />
+            <ActionButton label="Editar" onPress={() => editAddress(address)} secondary compact />
+          </View>
+        </View>
+      ))}
+      <View style={styles.formCard}>
+        <Text style={styles.summaryTitle}>{editingAddressId ? 'Editar dirección' : 'Nueva dirección'}</Text>
+        <Field label="Alias" value={addressForm.alias} onChangeText={(alias) => setAddressForm((current) => ({ ...current, alias }))} placeholder="Ej. Casa, Oficina" />
+        <Field label="Municipio" value={addressForm.municipality} onChangeText={(municipality) => setAddressForm((current) => ({ ...current, municipality }))} placeholder="Mosquera, Funza o Madrid" />
+        <Field label="Referencia de entrega" value={addressForm.reference} onChangeText={(reference) => setAddressForm((current) => ({ ...current, reference }))} placeholder="Calle, número, apartamento" multiline maxLength={160} />
+        <ActionButton label={editingAddressId ? 'Guardar cambios' : 'Agregar dirección'} onPress={submitAddress} compact />
+        {editingAddressId ? <ActionButton label="Cancelar edición" onPress={() => { setEditingAddressId(null); setAddressForm(EMPTY_ADDRESS_FORM); }} secondary compact /> : null}
+        <Text style={styles.hintText}>{validateAddress(addressForm) || 'Lista para guardar.'}</Text>
+      </View>
+    </ScrollView>
+  );
+
+  const renderNotifications = () => (
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <SectionTitle title="Centro de notificaciones" subtitle={`${unreadCount} sin leer · Avisos internos de la app`} />
+      {notifications.length === 0 ? (
+        <EmptyState title="No tienes notificaciones" message="Los cambios de pedido, reposiciones y casos de soporte aparecerán aquí." action="Ver mis pedidos" onPress={() => navigate('history')} />
+      ) : notifications.map((notification) => (
+        <Pressable
+          key={notification.id}
+          onPress={() => markNotificationRead(notification)}
+          style={[styles.notificationCard, !notification.read && styles.notificationUnread]}
+          accessibilityRole="button"
+        >
+          <View style={styles.notificationTop}>
+            <Text style={styles.notificationType}>{notification.type.toUpperCase()}</Text>
+            <Text style={styles.notificationDate}>{new Date(notification.date).toLocaleString('es-CO')}</Text>
+          </View>
+          <Text style={styles.notificationMessage}>{notification.message}</Text>
+          <Text style={styles.notificationStatus}>{notification.read ? 'Leído' : 'Sin leer · toca para marcar como leído'}</Text>
+        </Pressable>
+      ))}
+      <Text style={styles.hintText}>Estos avisos son internos: no son notificaciones push ni envíos a dispositivos.</Text>
+    </ScrollView>
+  );
+
+  const renderHelp = () => (
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <SectionTitle title="Centro de ayuda y solicitudes" subtitle="Registra un caso asociado a un pedido simulado" />
+      <View style={styles.formCard}>
+        <Text style={styles.fieldLabel}>Pedido relacionado</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+          {orders.length === 0
+            ? <Text style={styles.hintText}>Aún no hay pedidos en el historial.</Text>
+            : orders.map((order) => (
+              <Chip
+                key={order.code}
+                label={order.code}
+                active={helpForm.orderCode === order.code}
+                onPress={() => setHelpForm((current) => ({ ...current, orderCode: order.code }))}
+              />
+            ))}
+        </ScrollView>
+        <Text style={styles.fieldLabel}>Motivo</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+          {SUPPORT_MOTIVES.map((motive) => (
+            <Chip
+              key={motive}
+              label={motive}
+              active={helpForm.motive === motive}
+              onPress={() => setHelpForm((current) => ({ ...current, motive }))}
+            />
+          ))}
+        </ScrollView>
+        <Field
+          label="Descripción (mínimo 15 caracteres)"
+          value={helpForm.description}
+          onChangeText={(description) => setHelpForm((current) => ({ ...current, description }))}
+          placeholder="Cuéntanos qué ocurrió con tu pedido"
+          multiline
+          maxLength={300}
+        />
+        <ActionButton label="Enviar solicitud" onPress={submitTicket} compact />
+        <Text style={styles.hintText}>{validateSupportRequest(helpForm.orderCode, helpForm.description) || 'Lista para enviar. Este formulario es una simulación.'}</Text>
+      </View>
+
+      <SectionTitle title="Mis solicitudes" subtitle={`${tickets.length} ${tickets.length === 1 ? 'caso registrado' : 'casos registrados'}`} />
+      {tickets.length === 0 ? (
+        <EmptyState title="No hay solicitudes" message="Cuando envíes un caso, podrás consultar su estado aquí." />
+      ) : tickets.map((ticket) => (
+        <View key={ticket.id} style={styles.ticketCard}>
+          <View style={styles.ticketTop}>
+            <Text style={styles.ticketId}>{ticket.id}</Text>
+            <PlainBadge label={ticket.status} color={ticket.status === 'Abierto' ? COLORS.amber : COLORS.green} />
+          </View>
+          <Text style={styles.ticketLine}>Pedido: {ticket.orderCode} · Motivo: {ticket.motive}</Text>
+          <Text style={styles.ticketLine}>{ticket.description}</Text>
+          {ticket.response ? <Text style={styles.answerText}>{ticket.response}</Text> : null}
+          {ticket.status === 'Abierto' ? (
+            <ActionButton label="Simular respuesta" onPress={() => answerTicket(ticket)} secondary compact />
+          ) : null}
+        </View>
+      ))}
     </ScrollView>
   );
 
@@ -683,9 +1540,7 @@ export default function App() {
         <Text style={styles.fieldLabel}>Categoría</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRow}>
           {CATEGORIES.map((item) => (
-            <Pressable key={item} onPress={() => setSellerForm((current) => ({ ...current, category: item }))} style={[styles.categoryChip, sellerForm.category === item && styles.categoryChipActive]}>
-              <Text style={[styles.categoryText, sellerForm.category === item && styles.categoryTextActive]}>{item}</Text>
-            </Pressable>
+            <Chip key={item} label={item} active={sellerForm.category === item} onPress={() => setSellerForm((current) => ({ ...current, category: item }))} />
           ))}
         </ScrollView>
         <View style={styles.numericRow}>
@@ -694,35 +1549,76 @@ export default function App() {
         </View>
         <Field label="Descripción (mínimo 15 caracteres)" value={sellerForm.description} onChangeText={(description) => setSellerForm((current) => ({ ...current, description }))} multiline maxLength={240} />
         <ActionButton label={editingProductId ? 'Guardar cambios' : 'Crear producto'} onPress={saveSellerProduct} />
-        {editingProductId && <ActionButton label="Cancelar edición" onPress={clearSellerForm} secondary compact />}
+        {editingProductId ? <ActionButton label="Cancelar edición" onPress={() => { setEditingProductId(null); setSellerForm({ name: '', category: CATEGORIES[0], price: '', stock: '0', description: '' }); }} secondary compact /> : null}
       </View>
-      <SectionTitle title="Productos registrados" subtitle={`${products.length} productos`} />
+      <SectionTitle title="Productos registrados" subtitle={`${products.length} productos · stock derivado de variantes`} />
       {products.map((product) => (
         <View key={product.id} style={styles.sellerRow}>
           <View style={styles.sellerProductInfo}>
             <Text style={styles.sellerProductId}>{product.id} · {product.category}</Text>
             <Text style={styles.cartProductName}>{product.name}</Text>
-            <Text style={styles.summaryLabel}>{formatPrice(product.price)} · Stock: {product.stock}</Text>
+            <Text style={styles.summaryLabel}>{formatPrice(product.price)} · Stock: {getProductStock(product)}{product.variants?.length ? ' (variantes)' : ''}</Text>
           </View>
-          <Pressable onPress={() => editProduct(product)} style={styles.editButton}><Text style={styles.editButtonText}>Editar</Text></Pressable>
+          <Pressable onPress={() => { setEditingProductId(product.id); setSellerForm({ name: product.name, category: product.category, price: String(product.price), stock: String(getProductStock(product)), description: product.description, brand: product.brand }); }} style={styles.editButton}>
+            <Text style={styles.editButtonText}>Editar</Text>
+          </Pressable>
         </View>
       ))}
     </ScrollView>
   );
 
+  const renderMore = () => {
+    const items = [
+      { screen: 'compare', label: 'Comparador de productos', detail: `${compareIds.length}/3 seleccionados`, icon: '⚖' },
+      { screen: 'addresses', label: 'Mis direcciones', detail: `${addresses.length} registradas`, icon: '⌖' },
+      { screen: 'notifications', label: 'Notificaciones', detail: `${unreadCount} sin leer`, icon: '♢' },
+      { screen: 'help', label: 'Centro de ayuda', detail: `${tickets.length} solicitudes`, icon: '?' },
+      { screen: 'seller', label: 'Panel de vendedor', detail: `${products.length} productos`, icon: '▤' },
+    ];
+    return (
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <SectionTitle title="Más servicios" subtitle="Novedades del Marketplace 2.0" />
+        {items.map((item) => (
+          <Pressable key={item.screen} onPress={() => navigate(item.screen)} style={styles.moreItem} accessibilityRole="button">
+            <Text style={styles.moreIcon}>{item.icon}</Text>
+            <View style={styles.moreInfo}>
+              <Text style={styles.moreLabel}>{item.label}</Text>
+              <Text style={styles.moreDetail}>{item.detail}</Text>
+            </View>
+            <Text style={styles.moreArrow}>›</Text>
+          </Pressable>
+        ))}
+        <View style={styles.demoBox}>
+          <Text style={styles.demoTitle}>Simulación académica</Text>
+          <Text style={styles.demoCopy}>
+            Los avances de entrega, reposiciones y respuestas se ejecutan con controles marcados «Simular».
+            No hay pagos, transportistas, notificaciones push ni servicios externos.
+          </Text>
+        </View>
+      </ScrollView>
+    );
+  };
+
   const navItems = [
     { key: 'catalog', label: 'Catálogo', icon: '⌂' },
     { key: 'favorites', label: 'Favoritos', icon: '♡' },
     { key: 'cart', label: `Carrito${cartCount ? ` (${cartCount})` : ''}`, icon: '⌑' },
-    { key: 'history', label: 'Historial', icon: '↻' },
-    { key: 'seller', label: 'Vendedor', icon: '▤' },
+    { key: 'history', label: 'Pedidos', icon: '↻' },
+    { key: 'more', label: 'Más', icon: '◈' },
   ];
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" />
       <View style={styles.appShell}>
-        <View style={styles.header}><BrandMark /><View style={styles.headerBadge}><Text style={styles.headerBadgeText}>JHOY</Text></View></View>
+        <View style={styles.header}>
+          <BrandMark />
+          <Pressable onPress={() => navigate('notifications')} accessibilityRole="button" accessibilityLabel={`Notificaciones, ${unreadCount} sin leer`} style={styles.bellButton}>
+            <Text style={styles.bellIcon}>♢</Text>
+            {unreadCount > 0 ? <View style={styles.bellBadge}><Text style={styles.bellBadgeText}>{unreadCount}</Text></View> : null}
+          </Pressable>
+          <View style={styles.headerBadge}><Text style={styles.headerBadgeText}>JHOY</Text></View>
+        </View>
         {notice && (
           <Pressable onPress={() => setNotice(null)} style={[styles.notice, notice.type === 'error' && styles.noticeError]}>
             <Text style={[styles.noticeText, notice.type === 'error' && styles.noticeErrorText]}>{notice.message}</Text>
@@ -734,13 +1630,18 @@ export default function App() {
             <>
               {screen === 'catalog' && renderCatalog()}
               {screen === 'detail' && renderDetail()}
+              {screen === 'compare' && renderCompare()}
               {screen === 'favorites' && renderFavorites()}
               {screen === 'cart' && renderCart()}
               {screen === 'checkout' && renderCheckout()}
+              {screen === 'confirmation' && renderConfirmation()}
               {screen === 'history' && renderHistory()}
               {screen === 'orderDetail' && renderOrderDetail()}
-              {screen === 'confirmation' && renderConfirmation()}
+              {screen === 'addresses' && renderAddresses()}
+              {screen === 'notifications' && renderNotifications()}
+              {screen === 'help' && renderHelp()}
               {screen === 'seller' && renderSeller()}
+              {screen === 'more' && renderMore()}
             </>
           ) : <Text style={styles.loadingLabel}>Cargando tus datos guardados…</Text>}
         </View>
@@ -753,21 +1654,36 @@ export default function App() {
           ))}
         </View>
       </View>
+      <ConfirmDialog
+        visible={Boolean(dialog)}
+        title={dialog?.title}
+        message={dialog?.message}
+        confirmLabel={dialog?.confirmLabel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={() => setDialog(null)}
+      />
     </SafeAreaView>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Estilos
+// ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: COLORS.white },
   appShell: { flex: 1, backgroundColor: COLORS.background, maxWidth: 720, width: '100%', alignSelf: 'center' },
-  header: { minHeight: 72, paddingHorizontal: 15, backgroundColor: COLORS.white, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: COLORS.line },
+  header: { minHeight: 72, paddingHorizontal: 15, backgroundColor: COLORS.white, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: COLORS.line },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: 9, flex: 1, minWidth: 0 },
   brandIcon: { height: 39, width: 39, borderRadius: 13, backgroundColor: COLORS.blue, alignItems: 'center', justifyContent: 'center' },
   brandIconText: { color: COLORS.white, fontSize: 10, fontWeight: '900', letterSpacing: -0.5 },
   brandCopy: { flexShrink: 1 },
   brandName: { color: COLORS.ink, fontSize: 15, fontWeight: '900', letterSpacing: 1.5 },
   brandTagline: { color: COLORS.muted, fontSize: 8, marginTop: 2 },
-  headerBadge: { backgroundColor: COLORS.paleBlue, borderRadius: 9, paddingHorizontal: 9, paddingVertical: 6, marginLeft: 8 },
+  bellButton: { paddingHorizontal: 8, paddingVertical: 6, position: 'relative' },
+  bellIcon: { color: COLORS.blue, fontSize: 22, fontWeight: '700' },
+  bellBadge: { position: 'absolute', top: 2, right: 2, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: COLORS.red, alignItems: 'center', justifyContent: 'center' },
+  bellBadgeText: { color: COLORS.white, fontSize: 9, fontWeight: '800' },
+  headerBadge: { backgroundColor: COLORS.paleBlue, borderRadius: 9, paddingHorizontal: 9, paddingVertical: 6, marginLeft: 4 },
   headerBadgeText: { color: COLORS.blue, fontSize: 9, fontWeight: '900', letterSpacing: 1 },
   notice: { marginHorizontal: 12, marginTop: 8, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 10, backgroundColor: '#E8F5EE', flexDirection: 'row', alignItems: 'center', gap: 8 },
   noticeError: { backgroundColor: '#FCECEE' },
@@ -788,16 +1704,30 @@ const styles = StyleSheet.create({
   sectionTitle: { color: COLORS.ink, fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
   sectionSubtitle: { color: COLORS.muted, fontSize: 10, marginTop: 3 },
   categoryRow: { gap: 7, paddingRight: 10 },
-  categoryChip: { paddingHorizontal: 12, height: 32, borderRadius: 10, borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.white, alignItems: 'center', justifyContent: 'center' },
-  categoryChipActive: { backgroundColor: COLORS.blue, borderColor: COLORS.blue },
-  categoryText: { color: '#657389', fontSize: 10, fontWeight: '600' },
-  categoryTextActive: { color: COLORS.white, fontWeight: '700' },
+  chipRow: { gap: 7, paddingRight: 10, marginTop: 8 },
+  chip: { paddingHorizontal: 12, height: 32, borderRadius: 10, borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.white, alignItems: 'center', justifyContent: 'center' },
+  chipActive: { backgroundColor: COLORS.blue, borderColor: COLORS.blue },
+  chipDisabled: { opacity: 0.5 },
+  chipText: { color: '#657389', fontSize: 10, fontWeight: '600' },
+  chipTextActive: { color: COLORS.white, fontWeight: '700' },
+  chipTextDisabled: { color: COLORS.muted },
+  filterCard: { marginTop: 12, padding: 12, borderRadius: 14, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line },
+  filterHeader: { paddingVertical: 2 },
+  filterHeaderText: { color: COLORS.blue, fontSize: 11, fontWeight: '800' },
+  numericRow: { flexDirection: 'row', gap: 9, marginTop: 10 },
+  halfField: { flex: 1 },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  checkBox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1, borderColor: COLORS.line, alignItems: 'center', justifyContent: 'center' },
+  checkBoxActive: { backgroundColor: COLORS.blue, borderColor: COLORS.blue },
+  checkMark: { color: COLORS.white, fontSize: 11, fontWeight: '800' },
+  checkLabel: { color: COLORS.ink, fontSize: 10 },
+  filterActions: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  errorText: { color: COLORS.red, fontSize: 10, marginTop: 6 },
+  hintText: { color: COLORS.muted, fontSize: 10, lineHeight: 15, marginTop: 8 },
   listHeading: { marginTop: 19, marginBottom: 10 },
   sortControls: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 9 },
-  sortChip: { paddingHorizontal: 9, paddingVertical: 6, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, borderRadius: 8 },
-  sortChipActive: { backgroundColor: COLORS.paleBlue, borderColor: '#C9D9F9' },
-  sortText: { color: COLORS.muted, fontSize: 9 },
-  sortTextActive: { color: COLORS.blue, fontWeight: '700' },
+  compareBanner: { paddingVertical: 11, paddingHorizontal: 14, borderRadius: 12, backgroundColor: COLORS.paleBlue, marginBottom: 12 },
+  compareBannerText: { color: COLORS.blue, fontSize: 11, fontWeight: '800' },
   productGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 11 },
   productCard: { width: '48.5%', padding: 9, borderRadius: 15, backgroundColor: COLORS.white, borderWidth: 1, borderColor: '#EDF0F5' },
   productArtworkWrap: { position: 'relative' },
@@ -822,11 +1752,17 @@ const styles = StyleSheet.create({
   actionButtonText: { color: COLORS.white, fontSize: 11, fontWeight: '800', textAlign: 'center' },
   secondaryButton: { backgroundColor: '#F5F8FF', borderWidth: 1, borderColor: '#D8E4FA' },
   secondaryButtonText: { color: COLORS.blue },
+  dangerButton: { backgroundColor: COLORS.red },
   compactButton: { minHeight: 32, borderRadius: 9, marginTop: 8 },
   disabledButton: { backgroundColor: '#E7EAF0', borderColor: '#E7EAF0' },
   disabledButtonText: { color: '#8E99A8' },
+  cardActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  compareToggle: { minHeight: 32, borderRadius: 9, marginTop: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#D8E4FA', backgroundColor: '#F5F8FF' },
+  compareToggleActive: { backgroundColor: COLORS.blue, borderColor: COLORS.blue },
+  compareToggleText: { color: COLORS.blue, fontSize: 9, fontWeight: '800' },
+  compareToggleTextActive: { color: COLORS.white },
   trustNote: { color: COLORS.muted, fontSize: 9, textAlign: 'center', marginTop: 16, marginBottom: 4 },
-  emptyState: { minHeight: 220, padding: 22, borderRadius: 17, backgroundColor: COLORS.white, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.line, marginTop: 8 },
+  emptyState: { minHeight: 200, padding: 22, borderRadius: 17, backgroundColor: COLORS.white, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.line, marginTop: 8 },
   emptyStateIcon: { width: 58, height: 58, borderRadius: 20, backgroundColor: COLORS.paleBlue, alignItems: 'center', justifyContent: 'center' },
   emptyStateGlyph: { color: COLORS.blue, fontSize: 13, fontWeight: '900', letterSpacing: 1 },
   emptyStateTitle: { color: COLORS.ink, fontSize: 15, fontWeight: '800', marginTop: 13, textAlign: 'center' },
@@ -835,6 +1771,7 @@ const styles = StyleSheet.create({
   backArrow: { color: COLORS.blue, fontSize: 26, lineHeight: 27, marginRight: 5 },
   backText: { color: COLORS.blue, fontSize: 11, fontWeight: '700' },
   detailCard: { backgroundColor: COLORS.white, borderRadius: 17, padding: 15, borderWidth: 1, borderColor: COLORS.line },
+  detailCardSpaced: { backgroundColor: COLORS.white, borderRadius: 17, padding: 15, borderWidth: 1, borderColor: COLORS.line, marginTop: 14 },
   detailMetaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   detailCategory: { color: COLORS.blue, fontSize: 9, fontWeight: '800', letterSpacing: 0.8 },
   detailRating: { color: COLORS.ink, fontSize: 9, fontWeight: '700' },
@@ -847,10 +1784,36 @@ const styles = StyleSheet.create({
   reviewStar: { color: '#C7CED9', fontSize: 26 },
   reviewStarSelected: { color: '#F3A92C' },
   ratingPrompt: { color: COLORS.muted, fontSize: 9, marginLeft: 4 },
-  emptySearch: { color: COLORS.muted, textAlign: 'center', paddingVertical: 25, fontSize: 12 },
+  variantBlock: { marginTop: 14 },
+  variantChip: { minWidth: 118, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: COLORS.line, backgroundColor: '#FCFDFE' },
+  variantChipActive: { borderColor: COLORS.blue, backgroundColor: COLORS.paleBlue },
+  variantChipDisabled: { opacity: 0.45 },
+  variantLabel: { color: COLORS.ink, fontSize: 10, fontWeight: '800' },
+  variantLabelActive: { color: COLORS.blue },
+  variantPrice: { color: COLORS.muted, fontSize: 10, marginTop: 4 },
+  variantStock: { color: COLORS.green, fontSize: 9, marginTop: 3 },
+  selectedVariantBox: { marginTop: 9, padding: 10, borderRadius: 9, backgroundColor: COLORS.paleBlue },
+  selectedVariantText: { color: COLORS.blue, fontSize: 10, fontWeight: '700' },
+  quantityRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 },
+  demoBox: { marginTop: 14, padding: 12, borderRadius: 12, backgroundColor: '#FFF8E8', borderWidth: 1, borderColor: '#F3E2B8' },
+  demoTitle: { color: COLORS.amber, fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
+  demoCopy: { color: '#7A642F', fontSize: 10, lineHeight: 15, marginTop: 6 },
+  questionCard: { padding: 11, borderRadius: 10, backgroundColor: '#F8FAFD', borderWidth: 1, borderColor: COLORS.line, marginBottom: 9 },
+  questionText: { color: COLORS.ink, fontSize: 11, fontWeight: '700' },
+  questionMeta: { color: COLORS.muted, fontSize: 9, marginTop: 4 },
+  answerText: { color: '#5F6F83', fontSize: 10, lineHeight: 15, marginTop: 7, fontStyle: 'italic' },
+  compareTable: { minWidth: 560, backgroundColor: COLORS.white, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.line },
+  compareRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: COLORS.line, minHeight: 54 },
+  compareLabelCell: { width: 92, padding: 10, justifyContent: 'center', backgroundColor: '#F4F7FC' },
+  compareLabelText: { color: COLORS.blue, fontSize: 10, fontWeight: '800' },
+  compareCell: { width: 150, padding: 10, justifyContent: 'center', borderLeftWidth: 1, borderLeftColor: COLORS.line },
+  compareCellText: { color: COLORS.ink, fontSize: 10, fontWeight: '600' },
+  compareRemove: { paddingVertical: 6, alignItems: 'center', borderRadius: 7, backgroundColor: '#FCECEE' },
+  compareRemoveText: { color: COLORS.red, fontSize: 10, fontWeight: '800' },
   cartItem: { flexDirection: 'row', gap: 10, padding: 10, borderRadius: 15, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, marginBottom: 10 },
   cartItemInfo: { flex: 1, justifyContent: 'center' },
   cartProductName: { color: COLORS.ink, fontSize: 11, lineHeight: 15, fontWeight: '700', marginTop: 4 },
+  variantTag: { color: COLORS.blue, fontSize: 9, fontWeight: '700', marginTop: 3 },
   cartControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginTop: 6 },
   quantityControl: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, borderWidth: 1, borderColor: COLORS.line, overflow: 'hidden' },
   quantityButton: { width: 29, height: 27, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F8F9FB' },
@@ -877,16 +1840,59 @@ const styles = StyleSheet.create({
   fieldInput: { minHeight: 40, borderRadius: 9, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 10, color: COLORS.ink, fontSize: 11, backgroundColor: '#FCFDFE' },
   multilineInput: { minHeight: 75, paddingTop: 10, textAlignVertical: 'top' },
   reviewLine: { color: COLORS.muted, fontSize: 11, marginTop: 5 },
+  addressOption: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 11, borderRadius: 11, borderWidth: 1, borderColor: COLORS.line, backgroundColor: '#FCFDFE', marginBottom: 8 },
+  addressOptionActive: { borderColor: COLORS.blue, backgroundColor: COLORS.paleBlue },
+  addressOptionInfo: { flex: 1 },
+  addressAlias: { color: COLORS.ink, fontSize: 11, fontWeight: '800' },
+  addressLine: { color: COLORS.muted, fontSize: 10, marginTop: 3 },
+  selectLabel: { color: COLORS.blue, fontSize: 10, fontWeight: '800' },
+  selectLabelActive: { color: COLORS.blue, fontSize: 10, fontWeight: '800' },
+  quoteBox: { marginTop: 11, padding: 11, borderRadius: 10, backgroundColor: COLORS.paleBlue },
+  quoteBoxError: { backgroundColor: '#FCECEE' },
+  quoteTitle: { color: COLORS.blue, fontSize: 10, fontWeight: '900' },
+  quoteText: { color: COLORS.ink, fontSize: 10, lineHeight: 15, marginTop: 4 },
   orderCard: { padding: 14, borderRadius: 15, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, marginBottom: 10 },
   orderCardTop: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, alignItems: 'center' },
   orderCode: { color: COLORS.blue, fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
   orderTotal: { color: COLORS.ink, fontSize: 13, fontWeight: '900' },
   orderDate: { color: COLORS.muted, fontSize: 9, marginTop: 6 },
-  orderItems: { color: COLORS.ink, fontSize: 10, marginTop: 8 },
+  orderMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 9 },
+  orderItems: { color: COLORS.ink, fontSize: 10 },
   linkText: { color: COLORS.blue, fontSize: 10, fontWeight: '700', marginTop: 9 },
+  statusBadge: { alignSelf: 'flex-start', paddingHorizontal: 9, paddingVertical: 4, borderRadius: 8, borderWidth: 1 },
+  statusText: { fontSize: 9, fontWeight: '800' },
   orderLine: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 6 },
   orderItemIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: COLORS.paleBlue, alignItems: 'center', justifyContent: 'center' },
   orderLineInfo: { flex: 1 },
+  timelineRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  timelineDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: COLORS.blue, marginTop: 3 },
+  timelineInfo: { flex: 1 },
+  timelineStatus: { color: COLORS.ink, fontSize: 11, fontWeight: '800' },
+  timelineDate: { color: COLORS.muted, fontSize: 9, lineHeight: 13, marginTop: 2 },
+  addressCard: { padding: 13, borderRadius: 14, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, marginBottom: 9 },
+  addressCardTop: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
+  notificationCard: { padding: 12, borderRadius: 12, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, marginBottom: 8 },
+  notificationUnread: { borderLeftWidth: 4, borderLeftColor: COLORS.blue },
+  notificationTop: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
+  notificationType: { color: COLORS.blue, fontSize: 9, fontWeight: '900' },
+  notificationDate: { color: COLORS.muted, fontSize: 8 },
+  notificationMessage: { color: COLORS.ink, fontSize: 11, lineHeight: 16, marginTop: 6 },
+  notificationStatus: { color: COLORS.muted, fontSize: 9, marginTop: 6 },
+  ticketCard: { padding: 13, borderRadius: 13, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, marginBottom: 9 },
+  ticketTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  ticketId: { color: COLORS.blue, fontSize: 11, fontWeight: '900' },
+  ticketLine: { color: COLORS.muted, fontSize: 10, lineHeight: 15, marginTop: 5 },
+  moreItem: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 13, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, marginBottom: 9 },
+  moreIcon: { color: COLORS.blue, fontSize: 20, width: 26, textAlign: 'center' },
+  moreInfo: { flex: 1 },
+  moreLabel: { color: COLORS.ink, fontSize: 12, fontWeight: '800' },
+  moreDetail: { color: COLORS.muted, fontSize: 9, marginTop: 3 },
+  moreArrow: { color: COLORS.muted, fontSize: 20 },
+  sellerRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, borderRadius: 13, padding: 10, marginBottom: 8 },
+  sellerProductInfo: { flex: 1 },
+  sellerProductId: { color: COLORS.blue, fontSize: 8, fontWeight: '800', textTransform: 'uppercase' },
+  editButton: { backgroundColor: COLORS.paleBlue, paddingHorizontal: 11, paddingVertical: 8, borderRadius: 8 },
+  editButtonText: { color: COLORS.blue, fontSize: 9, fontWeight: '800' },
   confirmationCard: { marginTop: 30, padding: 22, borderRadius: 19, backgroundColor: COLORS.white, alignItems: 'center', borderWidth: 1, borderColor: COLORS.line },
   confirmationCheck: { width: 61, height: 61, borderRadius: 22, backgroundColor: '#E5F5EC', alignItems: 'center', justifyContent: 'center' },
   confirmationCheckText: { color: COLORS.green, fontSize: 29, fontWeight: '800' },
@@ -894,13 +1900,11 @@ const styles = StyleSheet.create({
   confirmationCopy: { color: COLORS.muted, fontSize: 11, textAlign: 'center', marginTop: 6 },
   simulationNotice: { width: '100%', padding: 11, borderRadius: 10, backgroundColor: '#FFF5E5', marginTop: 15 },
   simulationText: { color: '#85601D', fontSize: 10, lineHeight: 15, textAlign: 'center' },
-  numericRow: { flexDirection: 'row', gap: 9 },
-  halfField: { flex: 1 },
-  sellerRow: { flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: COLORS.white, borderWidth: 1, borderColor: COLORS.line, borderRadius: 13, padding: 10, marginBottom: 8 },
-  sellerProductInfo: { flex: 1 },
-  sellerProductId: { color: COLORS.blue, fontSize: 8, fontWeight: '800', textTransform: 'uppercase' },
-  editButton: { backgroundColor: COLORS.paleBlue, paddingHorizontal: 11, paddingVertical: 8, borderRadius: 8 },
-  editButtonText: { color: COLORS.blue, fontSize: 9, fontWeight: '800' },
+  dialogOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(15,27,45,0.55)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  dialogCard: { width: '100%', maxWidth: 380, backgroundColor: COLORS.white, borderRadius: 17, padding: 20 },
+  dialogTitle: { color: COLORS.ink, fontSize: 16, fontWeight: '900' },
+  dialogMessage: { color: COLORS.muted, fontSize: 11, lineHeight: 17, marginTop: 9 },
+  dialogActions: { marginTop: 12 },
   bottomNav: { minHeight: 61, backgroundColor: COLORS.white, borderTopWidth: 1, borderTopColor: COLORS.line, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingHorizontal: 3 },
   navItem: { flex: 1, minWidth: 0, alignItems: 'center', justifyContent: 'center', gap: 2 },
   navIcon: { color: '#96A1B0', fontSize: 19, lineHeight: 22 },
