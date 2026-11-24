@@ -10,10 +10,6 @@ Aplicación de comercio electrónico **simulada** desarrollada en React Native +
 - **Eslogan 2.0:** Compara, elige y sigue tu hardware con confianza.
 - **Rama de trabajo:** `marketplace-v2` (la versión 1.0 permanece en `master`).
 
-> Todo es una simulación académica: no hay pagos, envíos reales, transportadoras,
-> notificaciones push, bases de datos ni autenticación. Los datos de compradores y
-> direcciones son ficticios.
-
 ## Requisitos
 
 - Node.js 20+ y npm
